@@ -95,6 +95,9 @@ function H.on_close(ws, code, reason)
     
 end
 
+function H.on_ping(ws,data)
+end
+
 function H.on_pong(ws, data)
     -- Invoked when the response to a ping frame is received.
 
@@ -112,6 +115,7 @@ function ws.new(id, header, handler, conf)
     if code then
         response(id, code, result)
         socket.close(id)
+        return nil
     else
         write(id, result)
     end
@@ -122,12 +126,15 @@ function ws.new(id, header, handler, conf)
         client_terminated = false,
         server_terminated = false,
         mask_outgoing = conf.mask_outgoing,
-        check_origin = conf.check_origin
+        check_origin = conf.check_origin,
+        msg_max_len = conf.msg_max_len or 65535,
+        addr = conf.addr,
     }
 
+    setmetatable(self, ws_mt)
     self.handler.on_open(self)
  
-    return setmetatable(self, ws_mt)
+    return self
 end
 
 
@@ -141,6 +148,7 @@ function ws:send_frame(fin, opcode, data)
 
     local frame = string.pack("B", finbit | opcode)
     local l = #data
+    assert(l <= self.msg_max_len)
 
     if self.mask_outgoing then
         mask_bit = 0x80
@@ -175,18 +183,20 @@ end
 
 
 function ws:send_ping(data)
+    data = data or ""
     self:send_frame(true, 0x9, data)
 end
 
 
 function ws:send_pong(data)
+    data = data or ""
     self:send_frame(true, 0xA, data)
 end
 
 function ws:close(code, reason)
     -- 1000  "normal closure" status code
     if not self.server_terminated then
-        if code == nil and reason ~= nil then
+        if code == nil and reason == nil then
             code = 1000
         end
         local data = ""
@@ -200,25 +210,29 @@ function ws:close(code, reason)
 
         self.server_terminated = true
     end
-
-    if self.client_terminated then
-        socket.close(self.id)
-    end
+    xpcall(self.handler.on_close,debug.traceback,self,code,reason)
+    socket.close(self.id)
 end
 
 function ws:recv()
+    local buffer = {}
     local data = ""
     while true do
         local success, final, message = self:recv_frame()
         if not success then
             return success, message
         end
-        if final then
-            data = data .. message
-            break
-        else
-            data = data .. message
+        if message == nil then
+            return ""
         end
+        table.insert(buffer,message)
+        if final then
+            break
+        end
+    end
+    local data = table.concat(buffer,"")
+    if #data > self.msg_max_len then
+        return false,"message too big"
     end
     self.handler.on_message(self, data)
     return data
@@ -324,9 +338,9 @@ function ws:recv_frame()
             end
             self.client_terminated = true
             self:close()
-            self.handler.on_close(self, code, reason)
         elseif frame_opcode == 0x9 then --Ping
             self:send_pong()
+            self.handler.on_ping(self,frame_data)
         elseif frame_opcode == 0xA then -- Pong
             self.handler.on_pong(self, frame_data)
         end
@@ -338,10 +352,15 @@ end
 
 function ws:start()
     while true do
+        if self.server_terminated or self.client_terminated then
+            break
+        end
         local message, err = self:recv()
         if not message then
-            --print('recv eror:', message, err)
-            socket.close(self.id)
+            --print('recv error:', message, err)
+            -- 1006: Abnormal Closure
+            self:close(1006,err)
+            break
         end
     end
 end
