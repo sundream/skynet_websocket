@@ -165,6 +165,13 @@ function ws:send_frame(fin, opcode, data)
     end
 
     if self.mask_outgoing then
+        local key = rand(0xffffffff)
+        local masking_key = char((key >> 24) & 0xff,
+                            (key >> 16) & 0xff,
+                            (key >> 8) & 0xff,
+                            key & 0xff)
+        frame = frame .. masking_key
+        data = websocket_mask(masking_key,data,l)
     end
 
     frame = frame .. data
