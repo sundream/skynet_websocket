@@ -344,7 +344,7 @@ function ws:recv_frame()
                 reason = frame_data:sub(3)
             end
             self.client_terminated = true
-            self:close()
+            self:close(code,reason)
         elseif frame_opcode == 0x9 then --Ping
             self:send_pong()
             self.handler.on_ping(self,frame_data)
